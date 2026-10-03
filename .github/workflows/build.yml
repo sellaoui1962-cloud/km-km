@@ -1,0 +1,67 @@
+name: Build APK from ZIP
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unzip project
+        run: |
+          ZIP=$(ls *.zip | head -n 1)
+          echo "Unzipping $ZIP"
+          mkdir -p src
+          unzip -q "$ZIP" -d src
+          GRADLEW=$(find src -name gradlew -not -path "*/node_modules/*" | head -n 1)
+          echo "PROJECT_DIR=$(dirname "$GRADLEW")" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Accept Android SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build debug APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          chmod +x ./gradlew
+          set -o pipefail
+          ./gradlew assembleDebug --no-daemon --console=plain 2>&1 | tee build.log
+
+      - name: Show errors (only if build failed)
+        if: failure()
+        run: |
+          {
+            echo '## Build errors'
+            echo '```'
+            grep -E "^e: |What went wrong|Execution failed|error:|Could not resolve|AAPT|Manifest merger" -A4 "$PROJECT_DIR/build.log" | head -120
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          grep -E "^e: " "$PROJECT_DIR/build.log" | head -30 | while read -r l; do echo "::error::${l:0:400}"; done
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: ${{ env.PROJECT_DIR }}/build.log
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          find "$PROJECT_DIR" -path "*/build/outputs/apk/debug/*.apk" -exec cp {} out/ \;
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FlorisKimi-apk
+          path: out/*.apk
